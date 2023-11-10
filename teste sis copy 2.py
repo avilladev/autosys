@@ -1,138 +1,160 @@
 import tkinter as tk
 from tkinter import ttk
-from openpyxl import Workbook
-from tkinter import messagebox
-from ttkthemes import ThemedStyle
-from tkinter.simpledialog import askstring
+import os
 from datetime import datetime
-from PIL import Image, ImageTk  # Para trabalhar com imagens e imagens em GUIs
+import threading
+import time
 
-def adicionar_dados():
-    altura = entry_altura.get()
-    largura = entry_largura.get()
-    cod_material = entry_cod_material.get()
-    item = entry_item.get()
-    obs = entry_obs.get()
+class TaskManagerApp:
+    def __init__(self, root):
+        """
+        Inicializa a aplicação.
 
-    # Verifica se todos os campos estão preenchidos
-    if altura and largura and cod_material and item and obs:
-        numero_ordinal = len(tree.get_children()) + 1  # Número ordinal com base na posição da linha
-        tree.insert("", "end", values=(numero_ordinal, altura, largura, cod_material, item, obs))
-        # Limpa as entradas após adicionar os dados à tabela
-        entry_altura.delete(0, "end")
-        entry_largura.delete(0, "end")
-        entry_cod_material.delete(0, "end")
-        entry_item.delete(0, "end")
-        entry_obs.delete(0, "end")
-        # Mova o foco para o primeiro campo na nova linha
-        entry_altura.focus()
-    else:
-        messagebox.showerror("Erro", "Preencha todos os campos antes de adicionar.")
+        Args:
+            root (tk.Tk): Instância principal da interface gráfica.
+        """
+        self.root = root
+        self.root.title("Task Manager")
+        self.root.geometry("1000x600")
 
-def salvar_xlsx():
-    global titulo_planilha  # Declare a variável global para acessá-la
+        self.task_list = []
+        self.create_widgets()
+        self.scan_directory()
+        self.dark_theme = True  # Flag para controle do tema escuro
 
-    # Se não houver título definido, solicita ao usuário que insira um título
-    if not titulo_planilha:
-        titulo_planilha = askstring("Título da Planilha", "Digite um título para a planilha:")
-        if not titulo_planilha:
-            return
+    def create_widgets(self):
+        """
+        Cria os widgets da interface.
+        """
+        # Aplicar um tema mais escuro em toda a janela
+        self.style = ttk.Style()
+        self.style.configure("Treeview", background="black", foreground="white")
+        self.style.map("Treeview", background=[("selected", "blue")])
 
-    nome_arquivo = f"{titulo_planilha}_{datetime.now().strftime('%Y%m%d%H%M%S')}.xlsx"
-    wb = Workbook()
-    ws = wb.active
-    ws.append(["Número", "Altura", "Largura", "Cod. Material", "Item", "Obs"])
+        # Botão para alternar o tema
+        theme_button = tk.Button(self.root, text="Alternar Tema", command=self.toggle_theme)
+        theme_button.place(relx=0.9, rely=0.1, anchor=tk.NE)
 
-    for row in tree.get_children():
-        item = tree.item(row)
-        valores = item['values']
-        ws.append(valores)
+        # Caixa de pesquisa
+        search_label = tk.Label(self.root, text="Pesquisar:")
+        search_label.pack()
 
-    wb.save(nome_arquivo)
-    messagebox.showinfo("Salvar", f"Tabela salva em {nome_arquivo}")
+        self.search_entry = tk.Entry(self.root)
+        self.search_entry.pack()
 
-    # Reiniciar o programa após salvar
-    root.quit()
-    root.destroy()
-    iniciar_programa()
+        # Frame para a lista de tarefas
+        task_frame = ttk.Frame(self.root)
+        task_frame.pack(fill=tk.BOTH, expand=True)
 
-def solicitar_titulo():
-    global titulo_planilha
-    titulo_planilha = askstring("Título da Planilha", "Digite um título para a planilha:")
+        # Lista de tarefas com barras de rolagem
+        self.task_tree = ttk.Treeview(
+            task_frame,
+            columns=("Folder", "File Name", "Status", "Completion Date"),
+            show="headings"
+        )
 
-def iniciar_programa():
-    global root
-    # Iniciar a aplicação
+        self.task_tree.heading("Folder", text="Pasta Local")
+        self.task_tree.heading("File Name", text="Nome do Arquivo")
+        self.task_tree.heading("Status", text="Status")
+        self.task_tree.heading("Completion Date", text="Data de Conclusão")
+
+        self.task_tree.pack(fill=tk.BOTH, expand=True)
+        self.task_tree.column("Folder", width=200)
+        self.task_tree.column("File Name", width=300)
+        self.task_tree.column("Status", width=100)
+        self.task_tree.column("Completion Date", width=150)
+
+        self.task_tree.tag_configure("done", background="lightgreen")
+        self.task_tree.tag_configure("dark", background="black", foreground="white")
+
+        # Bind de dois cliques para marcar/desmarcar conclusão
+        self.task_tree.bind("<Double-1>", self.toggle_done)
+
+        # Iniciar thread de atualização
+        self.update_thread = threading.Thread(target=self.periodic_update, daemon=True)
+        self.update_thread.start()
+
+    def scan_directory(self):
+        """
+        Escaneia o diretório em busca de arquivos.
+        """
+        current_directory = os.path.dirname(os.path.abspath(__file__))
+        for root_folder, _, files in os.walk(current_directory):
+            for file in files:
+                file_path = os.path.join(root_folder, file)
+                if file.lower().endswith(".dwg"):
+                    file_info = os.stat(file_path)
+                    creation_time = datetime.fromtimestamp(file_info.st_ctime)
+                    if creation_time >= datetime(2023, 11, 1):
+                        self.task_list.append((root_folder, file, creation_time, None, False))
+
+        self.task_list.sort(key=lambda x: x[2], reverse=True)
+        self.update_task_list()
+
+    def update_task_list(self):
+        """
+        Atualiza a lista de tarefas no Treeview.
+        """
+        for item in self.task_tree.get_children():
+            self.task_tree.delete(item)
+
+        for task in self.task_list:
+            self.add_task(task)
+
+    def add_task(self, task):
+        """
+        Adiciona uma tarefa ao Treeview.
+
+        Args:
+            task (tuple): Informações sobre a tarefa.
+        """
+        folder, task_name, creation_time, completion_date, done = task
+        status = "Concluído" if done or completion_date else "Pendente"
+        completion_date_str = completion_date.strftime("%Y-%m-%d") if completion_date else ""
+        self.task_tree.insert("", "end", values=("", folder, task_name, status, completion_date_str), tags=("done" if done else "dark"))
+        self.task_tree.tag_bind(task_name, '<Button-1>', lambda event, name=task_name: self.toggle_done(event, name))
+
+    def toggle_done(self, event, task_name):
+        """
+        Alterna o status de concluído/pendente com um duplo clique.
+
+        Args:
+            event: O evento de clique.
+            task_name (str): Nome da tarefa.
+        """
+        selected_item = self.task_tree.selection()
+        if selected_item:
+            for task in self.task_list:
+                if task[1] == task_name:
+                    task_index = self.task_list.index(task)
+                    if task[4]:
+                        self.task_list[task_index] = (task[0], task[1], task[2], None, False)
+                    else:
+                        self.task_list[task_index] = (task[0], task[1], task[2], datetime.now(), True)
+            self.update_task_list()
+
+    def toggle_theme(self):
+        """
+        Alterna entre temas claro e escuro.
+        """
+        if self.dark_theme:
+            self.style.configure("Treeview", background="white", foreground="black")
+            self.style.map("Treeview", background=[("selected", "blue")])
+        else:
+            self.style.configure("Treeview", background="black", foreground="white")
+            self.style.map("Treeview", background=[("selected", "blue")])
+        self.dark_theme = not self.dark_theme
+
+    def periodic_update(self):
+        """
+        Atualiza a lista de tarefas periodicamente.
+        """
+        while True:
+            self.scan_directory()
+            self.root.update()
+            time.sleep(3600)  # Aguarda 1 hora
+
+if __name__ == "__main__":
     root = tk.Tk()
-    root.title("Tabela com XLSX")
-
-    # Configurar as colunas para redimensionar
-    for i in range(7):
-        root.grid_columnconfigure(i, weight=1)
-    root.grid_rowconfigure(2, weight=1)
-
-    # Chamar a função para solicitar o título ao iniciar a aplicação
-    solicitar_titulo()
-
-    # Aplicar um tema
-    style = ThemedStyle(root)
-    style.set_theme("plastik")  # Você pode experimentar outros temas disponíveis
-
-    # Definir cores personalizadas
-    root.configure(bg='#333333')  # Fundo cinza escuro
-    style.configure("TLabel", foreground='lightblue', background='#333333')  # Letras azuis claras para rótulos
-    style.configure("TButton", foreground='#333333', background='gray')  # Botões cinza
-    style.configure("Treeview", fieldbackground='#333333', background='#333333', foreground='lightblue')  # Treeview
-
-    # Frames para organizar os widgets
-    entries_frame = ttk.Frame(root)
-    entries_frame.grid(row=1, column=0, padx=10, pady=10, sticky="nsew")
-    tree_frame = ttk.Frame(root)
-    tree_frame.grid(row=2, column=0, padx=10, pady=10, sticky="nsew")
-
-    # Rótulos acima dos campos de preenchimento
-    rótulos = ["Número", "Altura", "Largura", "Cod. Material", "Item", "Obs"]
-    for i, rótulo in enumerate(rótulos):
-        ttk.Label(entries_frame, text=rótulo).grid(row=0, column=i, padx=5, pady=5, sticky="nsew")
-
-    # Entradas de texto para preenchimento das colunas
-    global entry_altura, entry_largura, entry_cod_material, entry_item, entry_obs
-    entry_altura = ttk.Entry(entries_frame, width=10)
-    entry_largura = ttk.Entry(entries_frame, width=10)
-    entry_cod_material = ttk.Entry(entries_frame, width=10)
-    entry_item = ttk.Entry(entries_frame, width=10)
-    entry_obs = ttk.Entry(entries_frame, width=10)
-
-    entry_altura.grid(row=1, column=1, padx=5, pady=5, sticky="ew")
-    entry_largura.grid(row=1, column=2, padx=5, pady=5, sticky="ew")
-    entry_cod_material.grid(row=1, column=3, padx=5, pady=5, sticky="ew")
-    entry_item.grid(row=1, column=4, padx=5, pady=5, sticky="ew")
-    entry_obs.grid(row=1, column=5, padx=5, pady=5, sticky="ew")
-
-    # Botão para adicionar dados à tabela
-    btn_adicionar = ttk.Button(entries_frame, text="Adicionar", command=adicionar_dados)
-    btn_adicionar.grid(row=1, column=6, padx=5, pady=5, sticky="ew")
-
-    # Criar a árvore para exibir a tabela
-    global tree
-    tree = ttk.Treeview(tree_frame, columns=("Número", "Altura", "Largura", "CodMaterial", "Item", "Obs"))
-    tree.heading("#1", text="Número")
-    tree.heading("#2", text="Altura")
-    tree.heading("#3", text="Largura")
-    tree.heading("#4", text="Cod. Material")
-    tree.heading("#5", text="Item")
-    tree.heading("#6", text="Obs")
-
-    # Configurar as colunas para redimensionar
-    for i in range(1, 7):
-        tree.column(f"#{i}", width=100, anchor="center")  # Define uma largura inicial para cada coluna
-
-    tree.pack(expand=True, fill="both")
-
-    # Botão para salvar a tabela em XLSX
-    btn_salvar = ttk.Button(root, text="Salvar", command=salvar_xlsx)
-    btn_salvar.grid(row=3, column=0, padx=10, pady=10, sticky="we")
-
+    app = TaskManagerApp(root)
     root.mainloop()
-
-iniciar_programa()
